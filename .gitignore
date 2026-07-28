@@ -5,5 +5,7 @@
 .vscode/
 build/
 libs/
+/.tools/
+/bin/
 config.tests/*/.qmake.stash
 config.tests/*/Makefile
