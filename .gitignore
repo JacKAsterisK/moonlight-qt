@@ -9,3 +9,4 @@ libs/
 /bin/
 config.tests/*/.qmake.stash
 config.tests/*/Makefile
+*.log

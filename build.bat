@@ -1,4 +1,14 @@
 @echo off
+if defined ML_BUILD_INNER goto :BuildMain
+setlocal
+set "ML_BUILD_INNER=1"
+call "%~f0" %*
+set "ML_BUILD_RESULT=%ERRORLEVEL%"
+echo.
+pause
+exit /b %ML_BUILD_RESULT%
+
+:BuildMain
 setlocal EnableExtensions EnableDelayedExpansion
 
 cd /d "%~dp0"
@@ -63,7 +73,7 @@ if errorlevel 1 (
 )
 
 if not defined CI_VERSION (
-    for /f "delims=" %%I in ('git rev-parse --short=7 HEAD') do set "CI_VERSION=%%I"
+    for /f "delims=" %%I in ('git rev-parse --short^=7 HEAD') do set "CI_VERSION=%%I"
 )
 
 echo.
@@ -72,7 +82,7 @@ echo Qt:     %QT_BIN%
 echo Output: %BIN_DIR%
 echo.
 
-call "%CD%\scripts\build-arch.bat" "%BUILD_CONFIG%" x64
+call "%CD%\scripts\build-arch.bat" %BUILD_CONFIG_LOWER%
 if errorlevel 1 (
     echo Moonlight build failed.
     exit /b 1

@@ -167,7 +167,7 @@ popd
 
 echo Compiling Moonlight in %BUILD_CONFIG% configuration
 pushd %BUILD_FOLDER%
-%SOURCE_ROOT%\scripts\jom.exe %BUILD_CONFIG%
+%SOURCE_ROOT%\scripts\jom.exe %BUILD_CONFIG% PATH="!PATH!"
 if !ERRORLEVEL! NEQ 0 goto Error
 popd
 

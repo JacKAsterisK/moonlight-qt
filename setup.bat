@@ -1,4 +1,14 @@
 @echo off
+if defined ML_SETUP_INNER goto :SetupMain
+setlocal
+set "ML_SETUP_INNER=1"
+call "%~f0" %*
+set "ML_SETUP_RESULT=%ERRORLEVEL%"
+echo.
+pause
+exit /b %ML_SETUP_RESULT%
+
+:SetupMain
 setlocal EnableExtensions EnableDelayedExpansion
 
 cd /d "%~dp0"
@@ -112,7 +122,7 @@ if /I "%INSTALLED_QT_VERSION%"=="%QT_VERSION%" (
         if not exist "%AQTVENV%\Scripts\python.exe" (
             echo Creating local Python environment...
             if not exist "%TOOLS_DIR%" mkdir "%TOOLS_DIR%"
-            %PYTHON_CMD% -m venv "%AQTVENV%"
+            !PYTHON_CMD! -m venv "%AQTVENV%"
             if errorlevel 1 exit /b 1
         )
 
