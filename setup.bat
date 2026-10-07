@@ -12,6 +12,8 @@ exit /b %ML_SETUP_RESULT%
 setlocal EnableExtensions EnableDelayedExpansion
 
 cd /d "%~dp0"
+set "CHECK_ONLY="
+set "INSTALLED_QT_VERSION="
 
 if /I "%~1"=="--help" goto :Help
 if /I "%~1"=="/?" goto :Help
@@ -23,7 +25,7 @@ if /I "%~1"=="--check" (
     exit /b 2
 )
 
-set "QT_VERSION=6.11.1"
+set "QT_VERSION=6.12.0"
 if defined ML_QT_VERSION set "QT_VERSION=%ML_QT_VERSION%"
 
 set "TOOLS_DIR=%CD%\.tools"
@@ -156,12 +158,8 @@ if defined CHECK_ONLY (
 
 echo [5/5] Checking Moonlight prebuilt dependencies...
 if defined CHECK_ONLY (
-    if exist "libs\windows\lib\x64\SDL3.dll" (
-        echo Moonlight dependencies are present.
-    ) else (
-        echo MISSING: libs\windows dependencies
-        set "MISSING=1"
-    )
+    powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CD%\setup-deps.ps1" -Check
+    if errorlevel 1 set "MISSING=1"
 ) else (
     powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%CD%\setup-deps.ps1"
     if errorlevel 1 exit /b 1
@@ -183,9 +181,9 @@ exit /b 0
 
 :FindVisualStudio
 set "VS_PATH="
-if exist "%CD%\scripts\vswhere.exe" (
-    for /f "usebackq delims=" %%I in (`"%CD%\scripts\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%I"
-)
+call "%CD%\scripts\find-vswhere.bat"
+if errorlevel 1 exit /b 0
+for /f "usebackq delims=" %%I in (`%VSWHERE% -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%I"
 exit /b 0
 
 :FindSevenZip
@@ -232,6 +230,6 @@ echo   setup.bat          Install/check build tools, Qt, submodules, and depende
 echo   setup.bat --check  Check requirements without changing the machine
 echo.
 echo Optional environment overrides:
-echo   ML_QT_VERSION      Qt version to install ^(default: 6.11.1^)
+echo   ML_QT_VERSION      Qt version to install ^(default: 6.12.0^)
 echo   ML_QT_ROOT         Qt installation root ^(default: .tools\Qt^)
 exit /b 0

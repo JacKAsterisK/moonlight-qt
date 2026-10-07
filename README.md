@@ -51,6 +51,25 @@ Hosting for Moonlight's Debian and L4T package repositories is graciously provid
   * Install "Graphics Tools" in the Optional Features page of the Windows Settings app.
   * Alternatively, run `dism /online /add-capability /capabilityname:Tools.Graphics.DirectX~~~~0.0.1.0` and reboot.
 
+### Windows scripts in this fork
+
+Run `setup.bat` to install missing build tools, the required Qt SDK, submodules, and
+the matching prebuilt dependencies. Rerunning it refreshes outdated dependencies;
+`setup.bat --check` checks requirements without installing anything.
+
+Run `build.bat` to compile the current checkout into `bin\Moonlight.exe`.
+Run `update.bat` to pull the current branch from its configured remote, refresh
+dependencies, close all running Moonlight instances, and rebuild that binary.
+Use `update.bat --no-pull` to rebuild local changes without pulling. An update
+stops if pulling, setup, closing Moonlight, or building fails. It preserves settings
+and pairings, including portable settings in `bin`. It updates the fork's copy in
+`bin`, rather than the separately installed application in Program Files.
+
+Both setup and build support `ML_QT_VERSION` and `ML_QT_ROOT` overrides. The default
+Qt version matches upstream's Windows CI (currently 6.12.0). The prebuilt dependency
+version is recorded after a successful install; unchanged bundles are reused.
+To repair a damaged bundle, run `powershell -File setup-deps.ps1 -Force`.
+
 ### macOS Build Requirements
 * Qt 6.11 SDK or later (earlier versions may work but are not officially supported)
 * Xcode 15 or later (earlier versions may work but are not officially supported)

@@ -31,7 +31,7 @@ if /I "%BUILD_CONFIG%"=="Release" (
     exit /b 2
 )
 
-set "QT_VERSION=6.11.1"
+set "QT_VERSION=6.12.0"
 if defined ML_QT_VERSION set "QT_VERSION=%ML_QT_VERSION%"
 
 set "QT_ROOT=%CD%\.tools\Qt"
@@ -94,7 +94,8 @@ if not exist "%DEPLOY_DIR%\Moonlight.exe" (
 )
 
 echo Refreshing bin directory...
-robocopy "%DEPLOY_DIR%" "%BIN_DIR%" /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
+rem Keep portable-mode settings, caches, and the user's portable.dat marker.
+robocopy "%DEPLOY_DIR%" "%BIN_DIR%" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP
 set "ROBOCOPY_RESULT=!ERRORLEVEL!"
 if !ROBOCOPY_RESULT! GEQ 8 (
     echo Failed to copy the build into %BIN_DIR%
