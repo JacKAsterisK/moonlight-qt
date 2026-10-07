@@ -152,7 +152,8 @@ if defined CHECK_ONLY (
         set "MISSING=1"
     )
 ) else (
-    git submodule update --init --recursive
+    rem Treat the existing Windows submodule line endings consistently when updating.
+    git -c core.autocrlf=true submodule update --init --recursive
     if errorlevel 1 exit /b 1
 )
 
