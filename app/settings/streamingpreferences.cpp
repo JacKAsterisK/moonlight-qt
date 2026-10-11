@@ -32,6 +32,9 @@
 #define SER_QUITAPPAFTER "quitAppAfter"
 #define SER_ABSMOUSEMODE "mouseacceleration"
 #define SER_ABSTOUCHMODE "abstouchmode"
+#define SER_WINTABTABLET "wintabtablet"
+#define SER_SYNCCLIPBOARD "syncclipboard"
+#define SER_SYNCCLIPBOARDFILES "syncclipboardfiles"
 #define SER_STARTWINDOWED "startwindowed"
 #define SER_FRAMEPACING "framepacing"
 #define SER_CONNWARNINGS "connwarnings"
@@ -137,6 +140,9 @@ void StreamingPreferences::reload()
     quitAppAfter = settings.value(SER_QUITAPPAFTER, false).toBool();
     absoluteMouseMode = settings.value(SER_ABSMOUSEMODE, false).toBool();
     absoluteTouchMode = settings.value(SER_ABSTOUCHMODE, true).toBool();
+    wintabTablet = settings.value(SER_WINTABTABLET, false).toBool();
+    syncClipboard = settings.value(SER_SYNCCLIPBOARD, false).toBool();
+    syncClipboardFiles = settings.value(SER_SYNCCLIPBOARDFILES, false).toBool();
     framePacing = settings.value(SER_FRAMEPACING, false).toBool();
     connectionWarnings = settings.value(SER_CONNWARNINGS, true).toBool();
     configurationWarnings = settings.value(SER_CONFWARNINGS, true).toBool();
@@ -337,6 +343,9 @@ void StreamingPreferences::save()
     settings.setValue(SER_QUITAPPAFTER, quitAppAfter);
     settings.setValue(SER_ABSMOUSEMODE, absoluteMouseMode);
     settings.setValue(SER_ABSTOUCHMODE, absoluteTouchMode);
+    settings.setValue(SER_WINTABTABLET, wintabTablet);
+    settings.setValue(SER_SYNCCLIPBOARD, syncClipboard);
+    settings.setValue(SER_SYNCCLIPBOARDFILES, syncClipboardFiles);
     settings.setValue(SER_FRAMEPACING, framePacing);
     settings.setValue(SER_CONNWARNINGS, connectionWarnings);
     settings.setValue(SER_CONFWARNINGS, configurationWarnings);

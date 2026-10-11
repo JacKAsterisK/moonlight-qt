@@ -50,7 +50,11 @@ win32 {
     }
 
     INCLUDEPATH += $$PWD/../libs/windows/include
-    LIBS += ws2_32.lib winmm.lib dxva2.lib ole32.lib gdi32.lib user32.lib d3d9.lib dwmapi.lib dbghelp.lib
+    LIBS += ws2_32.lib winmm.lib dxva2.lib ole32.lib gdi32.lib user32.lib d3d9.lib dwmapi.lib dbghelp.lib comctl32.lib
+    SOURCES += streaming/input/wintabtablet.cpp
+    HEADERS += streaming/input/wintabtablet.h streaming/input/wintababi.h streaming/input/wintabmapping.h
+    SOURCES += backend/clipboardfilesync.cpp
+    HEADERS += backend/clipboardfilesync.h backend/clipboardfilesengine.h
 }
 macx:!disable-prebuilts {
     !exists($$PWD/../libs/mac) {
@@ -174,6 +178,7 @@ SOURCES += \
     backend/identitymanager.cpp \
     backend/nvcomputer.cpp \
     backend/nvhttp.cpp \
+    backend/clipboardsync.cpp \
     backend/nvpairingmanager.cpp \
     backend/computermanager.cpp \
     backend/boxartmanager.cpp \
@@ -218,6 +223,8 @@ HEADERS += \
     backend/identitymanager.h \
     backend/nvcomputer.h \
     backend/nvhttp.h \
+    backend/clipboardsync.h \
+    backend/clipboardcoordinator.h \
     backend/nvpairingmanager.h \
     backend/computermanager.h \
     backend/boxartmanager.h \

@@ -9,6 +9,10 @@
 #include <QDir>
 #include <QGuiApplication>
 
+#ifdef Q_OS_WIN32
+#include "wintabtablet.h"
+#endif
+
 SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, int streamHeight)
     : m_MultiController(prefs.multiController),
       m_GamepadMouse(prefs.gamepadMouse),
@@ -28,6 +32,7 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
       m_StreamHeight(streamHeight),
       m_AbsoluteMouseMode(prefs.absoluteMouseMode),
       m_AbsoluteTouchMode(prefs.absoluteTouchMode),
+      m_WinTabTabletRequested(prefs.wintabTablet),
       m_DisabledTouchFeedback(false),
       m_LeftButtonReleaseTimer(0),
       m_RightButtonReleaseTimer(0),
@@ -218,6 +223,10 @@ SdlInputHandler::SdlInputHandler(StreamingPreferences& prefs, int streamWidth, i
 
 SdlInputHandler::~SdlInputHandler()
 {
+#ifdef Q_OS_WIN32
+    // Close the tablet context while the streaming window/connection still exist.
+    m_WinTabTablet.reset();
+#endif
     for (int i = 0; i < MAX_GAMEPADS; i++) {
         if (m_GamepadState[i].mouseEmulationTimer != 0) {
             Session::get()->notifyMouseEmulationMode(false);
@@ -268,10 +277,26 @@ SdlInputHandler::~SdlInputHandler()
 void SdlInputHandler::setWindow(SDL_Window *window)
 {
     m_Window = window;
+#ifdef Q_OS_WIN32
+    m_WinTabTablet.reset();
+    if (m_WinTabTabletRequested) {
+        m_WinTabTablet = std::make_unique<WinTabTablet>(window, m_StreamWidth, m_StreamHeight);
+        if (m_WinTabTablet->available()) {
+            // Pen coordinates are absolute; do not let relative mouse capture
+            // warp the local cursor while using the tablet's display mapping.
+            m_AbsoluteMouseMode = true;
+        }
+    }
+#endif
 }
 
 void SdlInputHandler::notifyFocusLost()
 {
+#ifdef Q_OS_WIN32
+    if (m_WinTabTablet) {
+        m_WinTabTablet->cancel();
+    }
+#endif
     // Release mouse cursor when another window is activated (e.g. by using ALT+TAB).
     // This lets user to interact with our window's title bar and with the buttons in it.
     // Doing this while the window is full-screen breaks the transition out of FS
@@ -352,6 +377,11 @@ bool SdlInputHandler::isSystemKeyCaptureActive()
 
 void SdlInputHandler::setCaptureActive(bool active)
 {
+#ifdef Q_OS_WIN32
+    if (m_WinTabTablet) {
+        m_WinTabTablet->setActive(active && m_AbsoluteMouseMode);
+    }
+#endif
     if (active) {
         // If we're in relative mode, try to activate SDL's relative mouse mode
         if (m_AbsoluteMouseMode || SDL_SetRelativeMouseMode(SDL_TRUE) < 0) {
@@ -406,6 +436,16 @@ void SdlInputHandler::setCaptureActive(bool active)
 
 void SdlInputHandler::handleTouchFingerEvent(SDL_TouchFingerEvent* event)
 {
+#if defined(Q_OS_WIN32) && SDL_VERSION_ATLEAST(2, 0, 22)
+    if (m_WinTabTablet && m_WinTabTablet->isCapturing()) {
+        const char* name = SDL_GetTouchName(event->touchId);
+        if (name && SDL_strcmp(name, "pen") == 0) {
+            // WinTab already sends the richer pen stream; do not also forward
+            // SDL's Windows Ink-to-touch compatibility events for that pen.
+            return;
+        }
+    }
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 10)
     if (SDL_GetTouchDeviceType(event->touchId) != SDL_TOUCH_DEVICE_DIRECT) {
         // Ignore anything that isn't a touchscreen. We may get callbacks

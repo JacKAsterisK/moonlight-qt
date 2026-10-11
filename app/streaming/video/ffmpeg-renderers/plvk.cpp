@@ -1038,6 +1038,12 @@ void PlVkRenderer::renderFrame(AVFrame *frame)
                 overlayParts[i].dst.x0 = 0;
                 overlayParts[i].dst.y0 = 0;
             }
+#ifdef Q_OS_WIN
+            else if (i == Overlay::OverlayClipboard) {
+                overlayParts[i].dst.x0 = SDL_max(0, targetFrame.crop.x1 - overlayParts[i].src.x1);
+                overlayParts[i].dst.y0 = SDL_max(0, targetFrame.crop.y1 - overlayParts[i].src.y1);
+            }
+#endif
             overlayParts[i].dst.x1 = overlayParts[i].dst.x0 + overlayParts[i].src.x1;
             overlayParts[i].dst.y1 = overlayParts[i].dst.y0 + overlayParts[i].src.y1;
 

@@ -1192,6 +1192,11 @@ bool D3D11VARenderer::createOverlayVertexBuffer(Overlay::OverlayType type, int w
         renderRect.x = 0;
         renderRect.y = m_DisplayHeight - height;
     }
+    else if (type == Overlay::OverlayClipboard) {
+        // Bottom right, separate from connection warnings.
+        renderRect.x = SDL_max(0, m_DisplayWidth - width);
+        renderRect.y = 0;
+    }
 
     renderRect.w = width;
     renderRect.h = height;

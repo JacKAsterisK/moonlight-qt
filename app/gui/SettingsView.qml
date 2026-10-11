@@ -1347,6 +1347,50 @@ Flickable {
                                   qsTr("NOTE: Due to a bug in GeForce Experience, this option may not work properly if your host PC has multiple monitors.")
                 }
 
+                CheckBox {
+                    visible: Qt.platform.os === "windows"
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Stream Wacom tablet pressure and tilt (WinTab)")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.wintabTablet
+                    onCheckedChanged: StreamingPreferences.wintabTablet = checked
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Capture pen pressure, tilt, eraser and barrel buttons from the installed WinTab tablet driver. Uses absolute mouse control during the stream. The host and drawing app must support Windows Ink pen input. Changes take effect with the next stream.")
+                }
+
+                CheckBox {
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Synchronize text clipboard while streaming")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.syncClipboard
+                    onCheckedChanged: StreamingPreferences.syncClipboard = checked
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Copy text between this computer and the paired host while a stream is active. Requires a host with clipboard support. Changes take effect with the next stream.")
+                }
+
+                CheckBox {
+                    visible: Qt.platform.os === "windows"
+                    hoverEnabled: true
+                    width: parent.width
+                    text: qsTr("Synchronize copied files and folders while streaming")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.syncClipboardFiles
+                    onCheckedChanged: StreamingPreferences.syncClipboardFiles = checked
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 10000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Copy files and folders from local drives between this computer and the paired Windows host. Network shares need a local copy first. The copy becomes available to paste after the transfer completes. Cut and deletion are not synchronized. Requires file clipboard support on the host. Changes take effect with the next stream.")
+                }
+
                 Row {
                     spacing: 5
                     width: parent.width

@@ -213,7 +213,14 @@ void EGLRenderer::renderOverlay(Overlay::OverlayType type, int viewportWidth, in
             // Top left
             overlayRect.x = 0;
             overlayRect.y = viewportHeight - newSurface->h;
-        } else {
+        }
+#ifdef Q_OS_WIN
+        else if (type == Overlay::OverlayClipboard) {
+            overlayRect.x = SDL_max(0, viewportWidth - newSurface->w);
+            overlayRect.y = 0;
+        }
+#endif
+        else {
             SDL_assert(false);
         }
 

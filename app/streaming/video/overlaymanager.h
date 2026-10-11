@@ -10,6 +10,9 @@ namespace Overlay {
 enum OverlayType {
     OverlayDebug,
     OverlayStatusUpdate,
+#ifdef Q_OS_WIN
+    OverlayClipboard,
+#endif
     OverlayMax
 };
 

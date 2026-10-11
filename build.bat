@@ -93,6 +93,13 @@ if not exist "%DEPLOY_DIR%\Moonlight.exe" (
     exit /b 1
 )
 
+rem Package builds use the isolated deployment output and leave a running
+rem developer binary alone. Ordinary builds and source updates still refresh bin.
+if defined ML_BUILD_NO_BIN (
+    echo Build complete: %DEPLOY_DIR%\Moonlight.exe
+    exit /b 0
+)
+
 echo Refreshing bin directory...
 rem Keep portable-mode settings, caches, and the user's portable.dat marker.
 robocopy "%DEPLOY_DIR%" "%BIN_DIR%" /E /R:2 /W:1 /NFL /NDL /NJH /NJS /NP

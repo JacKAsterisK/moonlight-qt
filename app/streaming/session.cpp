@@ -2,6 +2,8 @@
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
+#include "backend/clipboardsync.h"
+#include "backend/clipboardcoordinator.h"
 
 #include <Limelight.h>
 #include "SDL_compat.h"
@@ -16,6 +18,8 @@
 #endif
 
 #ifdef Q_OS_WIN32
+#include "backend/clipboardfilesync.h"
+#include <chrono>
 // Scaling the icon down on Win32 looks dreadful, so render at lower res
 #define ICON_SIZE 32
 #else
@@ -28,6 +32,8 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+#define SDL_CODE_CLIPBOARD_SYNC_WAKE 106
+#define SDL_CODE_CLIPBOARD_FILES_WAKE 107
 
 #include <openssl/rand.h>
 
@@ -1963,7 +1969,70 @@ void Session::exec()
     // Hijack this thread to be the SDL main thread. We have to do this
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
+    std::shared_ptr<ClipboardCoordinator> clipboardCoordinator;
+#ifdef Q_OS_WIN32
+    if (m_Preferences->syncClipboardFiles) {
+        clipboardCoordinator = std::make_shared<ClipboardCoordinator>();
+        if (!m_Preferences->syncClipboard) clipboardCoordinator->disableText();
+    }
+#endif
+    std::unique_ptr<ClipboardSync> clipboardSync;
+    if (m_Preferences->syncClipboard && !m_Computer->serverCert.isNull()
+            && m_Computer->activeHttpsPort != 0) {
+        clipboardSync = std::make_unique<ClipboardSync>(m_Computer, SDL_CODE_CLIPBOARD_SYNC_WAKE, clipboardCoordinator);
+    }
+#ifdef Q_OS_WIN32
+    std::unique_ptr<ClipboardFileSync> clipboardFileSync;
+    auto clipboardOverlayUntil = std::chrono::steady_clock::time_point::max();
+    if (m_Preferences->syncClipboardFiles && !m_Computer->serverCert.isNull()
+            && m_Computer->activeHttpsPort != 0) {
+        clipboardFileSync = std::make_unique<ClipboardFileSync>(m_Computer, SDL_CODE_CLIPBOARD_FILES_WAKE, clipboardCoordinator);
+    }
+#endif
     for (;;) {
+        if (clipboardSync) {
+            clipboardSync->pump();
+        }
+#ifdef Q_OS_WIN32
+        if (clipboardFileSync) {
+            clipboardFileSync->pump();
+            if (auto status = clipboardFileSync->takeStatus()) {
+                QString message;
+                bool ongoing = false;
+                switch (*status) {
+                case ClipboardFileSync::Status::Preparing:
+                    message = tr("Preparing file copy...");
+                    ongoing = true;
+                    break;
+                case ClipboardFileSync::Status::Transferring:
+                    message = tr("Copying files...");
+                    ongoing = true;
+                    break;
+                case ClipboardFileSync::Status::Verifying:
+                    message = tr("Verifying file copy...");
+                    ongoing = true;
+                    break;
+                case ClipboardFileSync::Status::Ready:
+                    message = tr("Files ready to paste");
+                    break;
+                case ClipboardFileSync::Status::Failed:
+                    message = tr("File copy stopped. Copy again to retry.");
+                    break;
+                case ClipboardFileSync::Status::Unavailable:
+                    message = tr("File clipboard sync is unavailable on this host.");
+                    break;
+                }
+                m_OverlayManager.updateOverlayText(Overlay::OverlayClipboard, message.toUtf8().constData());
+                m_OverlayManager.setOverlayState(Overlay::OverlayClipboard, true);
+                clipboardOverlayUntil = ongoing ? std::chrono::steady_clock::time_point::max()
+                    : std::chrono::steady_clock::now() + std::chrono::seconds(7);
+            }
+            if (std::chrono::steady_clock::now() >= clipboardOverlayUntil) {
+                m_OverlayManager.setOverlayState(Overlay::OverlayClipboard, false);
+                clipboardOverlayUntil = std::chrono::steady_clock::time_point::max();
+            }
+        }
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,
@@ -2001,8 +2070,22 @@ void Session::exec()
                         "Quit event received");
             goto DispatchDeferredCleanup;
 
+        case SDL_CLIPBOARDUPDATE:
+            if (clipboardSync) {
+                clipboardSync->notifyLocalClipboardChange();
+            }
+#ifdef Q_OS_WIN32
+            if (clipboardFileSync) {
+                clipboardFileSync->notifyLocalClipboardChange();
+            }
+#endif
+            break;
+
         case SDL_USEREVENT:
             switch (event.user.code) {
+            case SDL_CODE_CLIPBOARD_SYNC_WAKE:
+            case SDL_CODE_CLIPBOARD_FILES_WAKE:
+                break;
             case SDL_CODE_FRAME_READY:
                 if (m_VideoDecoder != nullptr) {
                     m_VideoDecoder->renderFrameOnMainThread();
@@ -2308,6 +2391,11 @@ void Session::exec()
     }
 
 DispatchDeferredCleanup:
+    // Stop the network worker before releasing this stream's SDL resources.
+    clipboardSync.reset();
+#ifdef Q_OS_WIN32
+    clipboardFileSync.reset();
+#endif
     // Switch back to synchronous logging mode
     StreamUtils::exitAsyncLoggingMode();
 

@@ -5,6 +5,12 @@
 
 #include "SDL_compat.h"
 
+#include <memory>
+
+#ifdef Q_OS_WIN32
+class WinTabTablet;
+#endif
+
 struct GamepadState {
     SDL_GameController* controller;
     SDL_JoystickID jsId;
@@ -241,6 +247,10 @@ private:
     int m_StreamHeight;
     bool m_AbsoluteMouseMode;
     bool m_AbsoluteTouchMode;
+    bool m_WinTabTabletRequested;
+#ifdef Q_OS_WIN32
+    std::unique_ptr<WinTabTablet> m_WinTabTablet;
+#endif
     bool m_DisabledTouchFeedback;
 
     SDL_TouchFingerEvent m_TouchDownEvent[MAX_FINGERS];

@@ -668,6 +668,10 @@ void DXVA2Renderer::notifyOverlayUpdated(Overlay::OverlayType type)
         renderRect.x = 0;
         renderRect.y = 0;
     }
+    else if (type == Overlay::OverlayClipboard) {
+        renderRect.x = SDL_max(0, m_DisplayWidth - newSurface->w);
+        renderRect.y = SDL_max(0, m_DisplayHeight - newSurface->h);
+    }
 
     renderRect.w = newSurface->w;
     renderRect.h = newSurface->h;

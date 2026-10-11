@@ -1,0 +1,9 @@
+TEMPLATE = app
+TARGET = test_clipboardsync
+QT += core gui network
+CONFIG += console c++17
+CONFIG -= app_bundle
+INCLUDEPATH += $$PWD/../../app $$PWD/../../moonlight-common-c/moonlight-common-c/src
+INCLUDEPATH += $$PWD/../../libs/windows/include/x64/SDL2
+SOURCES += test_clipboardsync.cpp ../../app/backend/clipboardsync.cpp ../../app/backend/nvaddress.cpp
+LIBS += -L$$PWD/../../libs/windows/lib/x64 SDL2.lib user32.lib

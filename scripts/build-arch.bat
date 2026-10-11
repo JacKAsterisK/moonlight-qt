@@ -193,6 +193,8 @@ if !ERRORLEVEL! EQU 0 (
 
 echo Compiling Moonlight in %BUILD_CONFIG% configuration
 pushd %BUILD_FOLDER%
+rem Limit dedicated package builds without changing nmake's serial behavior.
+if defined ML_BUILD_JOBS if /I "!JOM_CMD:nmake=!"=="!JOM_CMD!" set JOM_CMD=!JOM_CMD! -j %ML_BUILD_JOBS%
 !JOM_CMD! %BUILD_CONFIG% PATH="!PATH!"
 if !ERRORLEVEL! NEQ 0 goto Error
 popd
