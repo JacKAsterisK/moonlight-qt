@@ -45,6 +45,7 @@ function Invoke-MoonlightPackageBuild {
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the source state.' }
     $env:ML_BUILD_INNER = '1'
     $env:ML_BUILD_NO_BIN = '1'
+    $env:ML_BUILD_PORTABLE_ONLY = '1'
     & (Join-Path $repo 'build.bat') Release
     if ($LASTEXITCODE -ne 0) { throw 'Moonlight build failed.' }
     $afterCommit = & git.exe rev-parse HEAD
