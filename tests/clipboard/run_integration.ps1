@@ -5,6 +5,60 @@ param(
     [string]$TestName = ''
 )
 $ErrorActionPreference = 'Stop'
+
+# ProcessStartInfo.Arguments needs native Windows argv quoting on both .NET
+# Framework (Windows PowerShell 5.1) and modern .NET. No command shell is used.
+function ConvertTo-WindowsArgument([string]$Value) {
+    if ($Value.Contains([char]0)) { throw 'Native fixture argument contains NUL.' }
+    $quoted = [System.Text.StringBuilder]::new()
+    [void]$quoted.Append('"')
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]0x5c) { $slashes++; continue }
+        if ($character -eq '"') {
+            [void]$quoted.Append([char]0x5c, [int]($slashes * 2 + 1))
+        } else {
+            [void]$quoted.Append([char]0x5c, [int]$slashes)
+        }
+        [void]$quoted.Append($character)
+        $slashes = 0
+    }
+    [void]$quoted.Append([char]0x5c, [int]($slashes * 2))
+    [void]$quoted.Append('"')
+    return $quoted.ToString()
+}
+
+function Invoke-OpenSslFixture {
+    param([string[]]$Arguments, [string]$LogPath, [string]$Failure, [switch]$AppendLog)
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $OpenSsl
+    $start.Arguments = ($Arguments | ForEach-Object { ConvertTo-WindowsArgument $_ }) -join ' '
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        # OpenSSL reports successful key generation on stderr. Capture both
+        # streams concurrently, avoiding PowerShell 5.1 NativeCommandError.
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $timedOut = -not $process.WaitForExit(60000)
+        if ($timedOut) {
+            if (-not $process.HasExited) { $process.Kill() }
+            if (-not $process.WaitForExit(5000)) { throw "$Failure (OpenSSL fixture command could not be stopped)." }
+        }
+        $output = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
+        if ($AppendLog) { [IO.File]::AppendAllText($LogPath, $output, $utf8) }
+        else { [IO.File]::WriteAllText($LogPath, $output, $utf8) }
+        if ($timedOut) { throw "$Failure (OpenSSL fixture command timed out; diagnostics: $LogPath)." }
+        if ($process.ExitCode -ne 0) {
+            if ($output) { Write-Host $output.TrimEnd() }
+            throw "$Failure (exit $($process.ExitCode); diagnostics: $LogPath)."
+        }
+    } finally { $process.Dispose() }
+}
+
 if ($TestName -notmatch '^[a-zA-Z0-9 -]*$') { throw 'Invalid test-name filter.' }
 $repo = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 if (-not $QtRoot) { $QtRoot = Join-Path $repo '.tools\Qt\6.12.0\msvc2022_64' }
@@ -18,10 +72,10 @@ $opensslConfig = Join-Path $testRoot 'openssl-fixture.conf'
 [System.IO.File]::WriteAllText($opensslConfig, "[req]`ndistinguished_name=fixture_name`n[fixture_name]`n", $utf8)
 $authorityCert = Join-Path $testRoot 'authority.pem'
 $authorityKey = Join-Path $testRoot 'authority.key'
-& $OpenSsl req -config $opensslConfig -x509 -newkey rsa:2048 -nodes -days 1 -sha256 -subj '/CN=clipboard-integration-authority' `
-    -keyout $authorityKey -out $authorityCert -addext 'basicConstraints=critical,CA:TRUE' `
-    -addext 'keyUsage=critical,keyCertSign,cRLSign' 2> (Join-Path $testRoot 'authority-generation.log')
-if ($LASTEXITCODE -ne 0) { throw 'Cannot generate ephemeral HTTPS test authority.' }
+Invoke-OpenSslFixture -Arguments @('req', '-config', $opensslConfig, '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-sha256',
+    '-subj', '/CN=clipboard-integration-authority', '-keyout', $authorityKey, '-out', $authorityCert,
+    '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign,cRLSign') `
+    -LogPath (Join-Path $testRoot 'authority-generation.log') -Failure 'Cannot generate ephemeral HTTPS test authority'
 foreach ($identity in @('server', 'wrong-server', 'client')) {
     $cert = Join-Path $testRoot ($identity + '.pem')
     $key = Join-Path $testRoot ($identity + '.key')
@@ -31,19 +85,18 @@ foreach ($identity in @('server', 'wrong-server', 'client')) {
     [System.IO.File]::WriteAllText($extensions, "basicConstraints=critical,CA:FALSE`nkeyUsage=critical,digitalSignature,keyEncipherment`nextendedKeyUsage=$usage`nsubjectAltName=IP:127.0.0.1,DNS:localhost`n", $utf8)
     $opensslArgs = @('req', '-config', $opensslConfig, '-new', '-newkey', 'rsa:2048', '-nodes', '-sha256',
         '-subj', ('/CN=clipboard-integration-' + $identity), '-keyout', $key, '-out', $request)
-    & $OpenSsl @opensslArgs 2> (Join-Path $testRoot ($identity + '-generation.log'))
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot generate ephemeral HTTPS test certificates.' }
-    & $OpenSsl x509 -req -in $request -CA $authorityCert -CAkey $authorityKey -CAcreateserial `
-        -days 1 -sha256 -extfile $extensions -out $cert 2>> (Join-Path $testRoot ($identity + '-generation.log'))
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot sign ephemeral HTTPS test certificates.' }
+    Invoke-OpenSslFixture -Arguments $opensslArgs -LogPath (Join-Path $testRoot ($identity + '-generation.log')) `
+        -Failure 'Cannot generate ephemeral HTTPS test certificates'
+    Invoke-OpenSslFixture -Arguments @('x509', '-req', '-in', $request, '-CA', $authorityCert, '-CAkey', $authorityKey, '-CAcreateserial',
+        '-days', '1', '-sha256', '-extfile', $extensions, '-out', $cert) -LogPath (Join-Path $testRoot ($identity + '-generation.log')) `
+        -AppendLog -Failure 'Cannot sign ephemeral HTTPS test certificates'
 }
 $selfSigned = Join-Path $testRoot 'self-signed-server.pem'
-& $OpenSsl req -config $opensslConfig -x509 -new -key (Join-Path $testRoot 'server.key') -days 1 -sha256 `
-    -subj '/CN=Sunshine' -out $selfSigned `
-    2> (Join-Path $testRoot 'self-signed-server-generation.log')
-if ($LASTEXITCODE -ne 0) { throw 'Cannot generate pinned self-signed HTTPS test certificate.' }
-& $OpenSsl verify -CAfile $selfSigned $selfSigned > (Join-Path $testRoot 'self-signed-validation.log') 2>&1
-if ($LASTEXITCODE -ne 0) { throw 'Generated self-signed fixture certificate is invalid.' }
+Invoke-OpenSslFixture -Arguments @('req', '-config', $opensslConfig, '-x509', '-new', '-key', (Join-Path $testRoot 'server.key'),
+    '-days', '1', '-sha256', '-subj', '/CN=Sunshine', '-out', $selfSigned) -LogPath (Join-Path $testRoot 'self-signed-server-generation.log') `
+    -Failure 'Cannot generate pinned self-signed HTTPS test certificate'
+Invoke-OpenSslFixture -Arguments @('verify', '-CAfile', $selfSigned, $selfSigned) -LogPath (Join-Path $testRoot 'self-signed-validation.log') `
+    -Failure 'Generated self-signed fixture certificate is invalid'
 $batch = @"
 @echo off
 setlocal
