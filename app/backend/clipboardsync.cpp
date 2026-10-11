@@ -20,6 +20,7 @@
 #include <cstring>
 #include <functional>
 #include <optional>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #include <Windows.h>
@@ -100,15 +101,50 @@ std::optional<quint64> writeText(const QByteArray& text, quint64 expectedSequenc
 #ifdef Q_OS_WIN
     const auto unicode = QString::fromUtf8(text);
     struct Allocation {
-        HGLOBAL value;
+        HGLOBAL value = nullptr;
         ~Allocation() { if (value) GlobalFree(value); }
-    } allocation {GlobalAlloc(GMEM_MOVEABLE, (unicode.size() + 1) * sizeof(wchar_t))};
-    if (!allocation.value) return std::nullopt;
-    auto* output = static_cast<wchar_t*>(GlobalLock(allocation.value));
-    if (!output) return std::nullopt;
-    std::memcpy(output, unicode.utf16(), unicode.size() * sizeof(wchar_t));
-    output[unicode.size()] = L'\0';
-    GlobalUnlock(allocation.value);
+        bool prepare(const void* bytes, size_t length) {
+            value = GlobalAlloc(GMEM_MOVEABLE, length);
+            auto output = value ? GlobalLock(value) : nullptr;
+            if (!output) return false;
+            std::memcpy(output, bytes, length);
+            GlobalUnlock(value);
+            return true;
+        }
+        bool publish(UINT format) {
+            if (!SetClipboardData(format, value)) return false;
+            value = nullptr;
+            return true;
+        }
+    } unicodeData, ansiData, oemData, localeData;
+    LCID locale = MAKELCID(LOWORD(GetKeyboardLayout(0)), SORT_DEFAULT);
+    DWORD ansiPage = 0, oemPage = 0;
+    auto codePages = [&] {
+        return GetLocaleInfoW(locale, LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER,
+                   reinterpret_cast<LPWSTR>(&ansiPage), sizeof(ansiPage) / sizeof(wchar_t))
+            && GetLocaleInfoW(locale, LOCALE_IDEFAULTCODEPAGE | LOCALE_RETURN_NUMBER,
+                   reinterpret_cast<LPWSTR>(&oemPage), sizeof(oemPage) / sizeof(wchar_t));
+    };
+    if (!codePages()) {
+        locale = GetUserDefaultLCID();
+        if (!codePages()) return std::nullopt;
+    }
+    if (!ansiPage) ansiPage = GetACP();
+    if (!oemPage) oemPage = GetOEMCP();
+    const auto wide = reinterpret_cast<const wchar_t*>(unicode.utf16());
+    auto encoded = [&](Allocation& allocation, UINT codePage) {
+        const int size = WideCharToMultiByte(codePage, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+        if (!size) return false;
+        std::vector<char> bytes(size);
+        return WideCharToMultiByte(codePage, 0, wide, -1, bytes.data(), size, nullptr, nullptr) == size
+            && allocation.prepare(bytes.data(), bytes.size());
+    };
+    // CloseClipboard registers missing text/locale conversions and advances
+    // the native generation. Prepare every format before taking the lock so
+    // the captured generation stays correct through close without a race.
+    if (!unicodeData.prepare(wide, (unicode.size() + 1) * sizeof(wchar_t))
+        || !encoded(ansiData, ansiPage) || !encoded(oemData, oemPage)
+        || !localeData.prepare(&locale, sizeof(locale))) return std::nullopt;
     // A real HWND owns this immediate-rendered format. No window registration,
     // message pumping, retry loop or long clipboard lock is needed here.
     struct OwnerWindow {
@@ -119,8 +155,8 @@ std::optional<quint64> writeText(const QByteArray& text, quint64 expectedSequenc
     if (!owner.value || !OpenClipboard(owner.value)) return std::nullopt;
     struct ClipboardLock { ~ClipboardLock() { CloseClipboard(); } } clipboard;
     if (GetClipboardSequenceNumber() != expectedSequence || !EmptyClipboard()
-        || !SetClipboardData(CF_UNICODETEXT, allocation.value)) return std::nullopt;
-    allocation.value = nullptr; // Windows owns the successfully published data.
+        || !unicodeData.publish(CF_UNICODETEXT) || !ansiData.publish(CF_TEXT)
+        || !oemData.publish(CF_OEMTEXT) || !localeData.publish(CF_LOCALE)) return std::nullopt;
     return static_cast<quint64>(GetClipboardSequenceNumber());
 #else
     return SDL_SetClipboardText(text.constData()) == 0
