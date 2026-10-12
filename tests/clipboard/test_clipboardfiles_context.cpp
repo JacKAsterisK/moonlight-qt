@@ -1,6 +1,6 @@
 // Include the actual service implementation so its private token scope is
 // tested without adding a production-only test API. No real clipboard is used.
-#include "clipboard_files.cpp"
+#include "src/clipboard_files.cpp"
 #include <Aclapi.h>
 
 #include <iostream>

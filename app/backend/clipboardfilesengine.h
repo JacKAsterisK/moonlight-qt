@@ -359,6 +359,25 @@ namespace clipboard_files {
   }
 
   /**
+   * @brief Derive a validated relative name without interpreting Win32 namespace components as drive roots.
+   * @param child Internally generated extended local child path.
+   * @param base Internally generated extended local source directory.
+   * @return Safe relative name for the manifest; native I/O keeps its extended paths.
+   */
+  inline std::filesystem::path logical_relative_path(const std::filesystem::path &child, const std::filesystem::path &base) {
+    constexpr std::wstring_view prefix = L"\\\\?\\";
+    require(child.native().rfind(prefix, 0) == 0 && base.native().rfind(prefix, 0) == 0, "Missing internal extended path prefix");
+    const auto logical_child = std::filesystem::path(child.native().substr(prefix.size()));
+    const auto logical_base = std::filesystem::path(base.native().substr(prefix.size()));
+    const auto child_drive = logical_child.root_name().native();
+    const auto base_drive = logical_base.root_name().native();
+    require(logical_child.is_absolute() && logical_base.is_absolute() && child_drive.size() == 2 && child_drive.back() == L':' && base_drive.size() == 2 && base_drive.back() == L':', "Internal clipboard path is not a local drive path");
+    auto relative = logical_child.lexically_relative(logical_base);
+    validate_path(utf8(relative.generic_wstring()));
+    return relative;
+  }
+
+  /**
    * @brief Reject missing paths and reparse points throughout the existing ancestor chain.
    */
   inline void plain_path(const std::filesystem::path &path) {
@@ -397,6 +416,252 @@ namespace clipboard_files {
    */
   inline bool same_file(const BY_HANDLE_FILE_INFORMATION &a, const BY_HANDLE_FILE_INFORMATION &b) {
     return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow && file_size(a) == file_size(b) && CompareFileTime(&a.ftLastWriteTime, &b.ftLastWriteTime) == 0;
+  }
+
+  /**
+   * @brief Read metadata from an existing non-reparse native object.
+   */
+  inline BY_HANDLE_FILE_INFORMATION object_info(HANDLE handle) {
+    BY_HANDLE_FILE_INFORMATION result {};
+    require(handle != INVALID_HANDLE_VALUE && GetFileInformationByHandle(handle, &result), "Cannot inspect clipboard object");
+    require(!(result.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT), "Unsafe clipboard reparse point");
+    return result;
+  }
+
+  /**
+   * @brief Compare native object identity independently of mutable directory timestamps.
+   */
+  inline bool same_object(const BY_HANDLE_FILE_INFORMATION &a, const BY_HANDLE_FILE_INFORMATION &b) {
+    return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow && (a.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == (b.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+  }
+
+  /**
+   * @brief Pin a directory against writes, reparse conversion and renaming while using its path.
+   */
+  inline std::unique_ptr<handle_t> pin_directory(const std::filesystem::path &path) {
+    auto handle = std::make_unique<handle_t>(CreateFileW(native_path(path).c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    require(object_info(handle->value).dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY, "Clipboard ancestor is not a directory");
+    return handle;
+  }
+
+  /**
+   * @brief Pin every existing directory from the local volume down, preventing ancestor replacement during a path operation.
+   */
+  class directory_chain_t {
+    std::vector<std::unique_ptr<handle_t>> handles;  ///< Ancestors held without WRITE or DELETE sharing.
+
+  public:
+    /**
+     * @brief Open a verified local directory chain in parent-first order.
+     * @param path Last directory to pin.
+     * @param check Optional cancellation check between directory opens.
+     */
+    explicit directory_chain_t(const std::filesystem::path &path, cancel_t check = {}) {
+      local_path(path);
+      auto normalized = path.lexically_normal();
+      auto current = normalized.root_path();
+      handles.push_back(pin_directory(current));
+      for (const auto &part : normalized.relative_path()) {
+        require(!check || !check(), "Clipboard transfer cancelled");
+        if (part.empty() || part == L".") {
+          continue;
+        }
+        require(part != L"..", "Unsafe clipboard ancestor");
+        current /= part;
+        handles.push_back(pin_directory(current));
+      }
+    }
+
+    /**
+     * @brief Return the pinned final directory's native identity.
+     */
+    BY_HANDLE_FILE_INFORMATION info() const {
+      return object_info(handles.back()->value);
+    }
+  };
+
+  /**
+   * @brief Own one Win32 directory search without depending on CRT long-path enumeration.
+   */
+  class directory_search_t {
+    HANDLE handle = INVALID_HANDLE_VALUE;  ///< Search handle closed with FindClose.
+    bool first = true;  ///< Whether the initial result remains to be consumed.
+
+  public:
+    WIN32_FIND_DATAW data {};  ///< Current native entry metadata and filename.
+
+    /**
+     * @brief Enumerate an already pinned local directory using its extended path.
+     */
+    explicit directory_search_t(const std::filesystem::path &path) {
+      auto pattern = native_path(path).native();
+      if (pattern.back() != L'\\') {
+        pattern += L'\\';
+      }
+      pattern += L'*';
+      handle = FindFirstFileW(pattern.c_str(), &data);
+      require(handle != INVALID_HANDLE_VALUE || GetLastError() == ERROR_FILE_NOT_FOUND, "Cannot enumerate clipboard directory");
+    }
+
+    /**
+     * @brief Release the native search even when a visit throws.
+     */
+    ~directory_search_t() {
+      if (handle != INVALID_HANDLE_VALUE) {
+        FindClose(handle);
+      }
+    }
+
+    /**
+     * @brief Prevent copying search ownership.
+     */
+    directory_search_t(const directory_search_t &) = delete;
+    /**
+     * @brief Prevent assigning search ownership.
+     */
+    directory_search_t &operator=(const directory_search_t &) = delete;
+
+    /**
+     * @brief Return one real child; report native enumeration errors instead of falling back.
+     */
+    bool next() {
+      if (handle == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+      for (;;) {
+        if (!first && !FindNextFileW(handle, &data)) {
+          require(GetLastError() == ERROR_NO_MORE_FILES, "Clipboard directory enumeration failed");
+          return false;
+        }
+        first = false;
+        if (std::wstring_view(data.cFileName) != L"." && std::wstring_view(data.cFileName) != L"..") {
+          return true;
+        }
+      }
+    }
+  };
+
+  /**
+   * @brief Walk bounded verified local entries while ancestor handles prevent path substitution.
+   * @param root Local directory whose children are visited.
+   * @param visit Receives logical absolute and relative paths plus the pinned object's identity.
+   * @param check Optional cancellation check before every native enumeration step.
+   * @param recursive Whether to visit descendant directories as well as immediate children.
+   * @param marker_metadata Permit concurrent writers only for immediate marker metadata; mutations still require a later exclusive identity check.
+   */
+  inline void walk_directory(const std::filesystem::path &root, const std::function<void(const std::filesystem::path &, const std::filesystem::path &, const BY_HANDLE_FILE_INFORMATION &)> &visit, cancel_t check = {}, bool recursive = true, bool marker_metadata = false) {
+    require(!marker_metadata || !recursive, "Mutable metadata cannot be used for recursive clipboard walking");
+    directory_chain_t ancestors(root, check);
+
+    /**
+     * @brief Keep one depth-first search and directory lease alive until all its children finish.
+     */
+    struct frame_t {
+      std::filesystem::path path;  ///< Logical absolute directory path.
+      std::filesystem::path relative;  ///< Validated name relative to the selected root.
+      std::unique_ptr<handle_t> lease;  ///< Directory pinned during descendant work.
+      directory_search_t search;  ///< Native enumeration cursor.
+
+      /**
+       * @brief Pin a directory before opening its search cursor.
+       */
+      frame_t(std::filesystem::path path, std::filesystem::path relative):
+          path(std::move(path)),
+          relative(std::move(relative)),
+          lease(pin_directory(this->path)),
+          search(this->path) {}
+    };
+
+    std::vector<std::unique_ptr<frame_t>> stack;
+    stack.push_back(std::make_unique<frame_t>(root, std::filesystem::path()));
+    size_t entries = 0;
+    while (!stack.empty()) {
+      require(!check || !check(), "Clipboard transfer cancelled");
+      auto &frame = *stack.back();
+      if (!frame.search.next()) {
+        stack.pop_back();
+        continue;
+      }
+      require(++entries <= max_entries, "Too many clipboard entries");
+      if (marker_metadata && (frame.search.data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        continue;
+      }
+      require(!(frame.search.data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT), "Unsafe clipboard reparse point");
+      const auto relative = frame.relative / frame.search.data.cFileName;
+      validate_path(utf8(relative.generic_wstring()));
+      const auto path = root / relative;
+      require(logical_relative_path(native_path(path), native_path(root)) == relative, "Clipboard enumeration escaped its selected root");
+      const DWORD sharing = marker_metadata ? FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE : FILE_SHARE_READ;
+      const DWORD access = marker_metadata ? FILE_READ_ATTRIBUTES : FILE_READ_ATTRIBUTES | FILE_READ_DATA;
+      handle_t object(CreateFileW(native_path(path).c_str(), access, sharing, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+      if (marker_metadata && object.value == INVALID_HANDLE_VALUE) {
+        continue;
+      }
+      const auto info = object_info(object.value);
+      visit(path, relative, info);
+      if (recursive && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        stack.push_back(std::make_unique<frame_t>(path, relative));
+      }
+    }
+  }
+
+  /**
+   * @brief Delete exactly one previously inspected local object by handle, rejecting path substitution.
+   */
+  inline void delete_owned_object(const std::filesystem::path &path, const BY_HANDLE_FILE_INFORMATION &expected, const std::filesystem::path &root, const BY_HANDLE_FILE_INFORMATION &root_identity) {
+    directory_chain_t parents(path.parent_path());
+    if (path != root) {
+      auto root_lease = pin_directory(root);
+      require(same_object(root_identity, object_info(root_lease->value)), "Clipboard cleanup root changed");
+    }
+    handle_t object(CreateFileW(native_path(path).c_str(), FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    const auto actual = object_info(object.value);
+    require(same_object(expected, actual), "Clipboard cleanup object changed");
+    if (!(actual.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      require(same_file(expected, actual), "Clipboard cleanup file changed");
+    }
+    FILE_DISPOSITION_INFO disposition {TRUE};
+    require(SetFileInformationByHandle(object.value, FileDispositionInfo, &disposition, sizeof(disposition)), "Cannot remove owned clipboard object");
+  }
+
+  /**
+   * @brief Safely remove a bounded private tree, never following reparses or trusting CRT directory names.
+   */
+  inline void remove_owned_tree(const std::filesystem::path &root, cancel_t check = {}, const BY_HANDLE_FILE_INFORMATION *expected = nullptr) {
+    const auto attributes = GetFileAttributesW(native_path(root).c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+      require(GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND, "Cannot inspect clipboard cleanup root");
+      return;
+    }
+    require((attributes & FILE_ATTRIBUTE_DIRECTORY) && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT), "Unsafe clipboard cleanup root");
+    BY_HANDLE_FILE_INFORMATION root_identity {};
+
+    /**
+     * @brief Record a validated child and its identity before any deletion starts.
+     */
+    struct owned_t {
+      std::filesystem::path relative;  ///< Safe name beneath the private root.
+      BY_HANDLE_FILE_INFORMATION identity {};  ///< Actual native object to reclaim.
+    };
+
+    std::vector<owned_t> entries;
+    {
+      directory_chain_t ancestors(root, check);
+      root_identity = ancestors.info();
+      require(!expected || same_object(*expected, root_identity), "Clipboard cleanup root changed");
+      walk_directory(root, [&](const auto &, const auto &relative, const auto &identity) {
+        entries.push_back({relative, identity});
+      },
+                     check);
+    }
+    for (auto entry = entries.rbegin(); entry != entries.rend(); ++entry) {
+      require(!check || !check(), "Clipboard transfer cancelled");
+      const auto path = root / entry->relative;
+      require(logical_relative_path(native_path(path), native_path(root)) == entry->relative, "Clipboard cleanup escaped its private root");
+      delete_owned_object(path, entry->identity, root, root_identity);
+    }
+    require(!check || !check(), "Clipboard transfer cancelled");
+    delete_owned_object(root, root_identity, root, root_identity);
   }
 
   /**
@@ -546,13 +811,16 @@ namespace clipboard_files {
         local_path(original);
         auto root = std::filesystem::absolute(original).lexically_normal();
         require(!root.filename().empty(), "Cannot copy a filesystem root");
+        directory_chain_t parents(root.parent_path(), cancelled);
+        const auto attributes = GetFileAttributesW(native_path(root).c_str());
+        require(attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_REPARSE_POINT), "Missing path or reparse point");
+        auto root_lease = (attributes & FILE_ATTRIBUTE_DIRECTORY) ? pin_directory(root) : std::unique_ptr<handle_t>();
         add(root, root.filename());
         if (manifest.entries.back().directory) {
-          auto native_root = native_path(root);
-          for (const auto &child : std::filesystem::recursive_directory_iterator(native_root)) {
-            auto relative = child.path().lexically_relative(native_root);
-            add(root / relative, root.filename() / relative);
-          }
+          walk_directory(root, [&](const auto &path, const auto &relative, const auto &) {
+            add(path, root.filename() / relative);
+          },
+                         cancelled);
         }
       }
       // Encoding also bounds the manifest before any transfer is advertised.
@@ -606,7 +874,20 @@ namespace clipboard_files {
     std::vector<unsigned char> completed;  ///< Zero for unsent, one for in-flight, two for accepted batches.
     bool retained = false;  ///< Whether verified clipboard roots must survive receiver destruction.
     std::filesystem::path marker;  ///< Ownership marker used for safe later cleanup.
+    BY_HANDLE_FILE_INFORMATION directory_identity {};  ///< Original private stage, never a replacement at the same path.
     std::unique_ptr<handle_t> marker_lease;  ///< Open lease preventing cleanup while this stage is active.
+
+    /**
+     * @brief Reclaim the original unpublished tree and its still-owned marker handle.
+     */
+    void discard_stage() {
+      remove_owned_tree(directory, {}, &directory_identity);
+      if (marker_lease && marker_lease->value != INVALID_HANDLE_VALUE) {
+        FILE_DISPOSITION_INFO disposition {TRUE};
+        require(SetFileInformationByHandle(marker_lease->value, FileDispositionInfo, &disposition, sizeof(disposition)), "Cannot discard owned clipboard marker");
+      }
+      marker_lease.reset();
+    }
 
   public:
     /**
@@ -636,10 +917,14 @@ namespace clipboard_files {
       ULARGE_INTEGER free {};
       require(GetDiskFreeSpaceExW(native_path(storage).c_str(), &free, nullptr, nullptr) && free.QuadPart >= total + 1024ULL * 1024 * 1024, "Insufficient clipboard staging space");
       require(std::filesystem::create_directory(native_path(directory)), "Cannot create private clipboard stage");
+      {
+        directory_chain_t parents(directory.parent_path());
+        directory_identity = object_info(pin_directory(directory)->value);
+      }
       marker = directory;
       marker += L".pending";
       try {
-        marker_lease = std::make_unique<handle_t>(CreateFileW(native_path(marker).c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+        marker_lease = std::make_unique<handle_t>(CreateFileW(native_path(marker).c_str(), GENERIC_READ | GENERIC_WRITE | DELETE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
         require(marker_lease->value != INVALID_HANDLE_VALUE, "Cannot mark clipboard stage");
         auto label = "MLCF1 " + utf8(directory.filename().native()) + "\n";
         DWORD written = 0;
@@ -671,9 +956,9 @@ namespace clipboard_files {
         }
         completed.resize(plan.size());
       } catch (...) {
-        marker_lease.reset();
-        std::filesystem::remove_all(native_path(directory));
-        std::filesystem::remove(native_path(marker));
+        try {
+          discard_stage();
+        } catch (...) {}  // Preserve the original construction failure; changed paths remain untouched.
         throw;
       }
     }
@@ -682,14 +967,11 @@ namespace clipboard_files {
      * @brief Release the active lease and remove an unpublished stage.
      */
     ~receiver_t() {
-      marker_lease.reset();
       if (!retained && !directory.empty()) {
         // The remote peer cannot choose this unique private stage path.
         try {
-          std::error_code error;
-          std::filesystem::remove_all(native_path(directory), error);
-          std::filesystem::remove(native_path(marker), error);
-        } catch (...) {}  // A disappeared local drive is cleaned on a later run.
+          discard_stage();
+        } catch (...) {}  // A changed local path is retained for later safe cleanup.
       }
     }
 
@@ -962,27 +1244,64 @@ namespace clipboard_files {
    * @brief Reclaim only old owned inactive stages, protecting current clipboard roots and cancellation.
    */
   inline void prune_storage(const std::filesystem::path &storage, const std::vector<std::filesystem::path> &protected_roots, cancel_t check = {}) {
-    if (!std::filesystem::exists(native_path(storage))) {
+    if (check && check()) {
       return;
     }
-    plain_path(storage);
-    auto now = std::filesystem::file_time_type::clock::now();
-    for (const auto &item : std::filesystem::directory_iterator(native_path(storage))) {
+    const auto attributes = GetFileAttributesW(native_path(storage).c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+      require(GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND, "Cannot inspect clipboard storage");
+      return;
+    }
+    directory_chain_t ancestors(storage);
+    FILETIME now {};
+    GetSystemTimeAsFileTime(&now);
+    const uint64_t now_ticks = (uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime;
+
+    /**
+     * @brief Hold verified immediate marker candidates after releasing their enumeration leases.
+     */
+    struct marker_t {
+      std::filesystem::path path;  ///< Logical local marker path.
+      BY_HANDLE_FILE_INFORMATION identity {};  ///< Inspected native identity and age.
+    };
+
+    std::vector<marker_t> markers;
+    try {
+      walk_directory(storage, [&](const auto &path, const auto &, const auto &identity) {
+        if (!(identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          markers.push_back({path, identity});
+        }
+      },
+                     check,
+                     false,
+                     true);
+    } catch (...) {
       if (check && check()) {
         return;
       }
-      auto marker = storage / item.path().filename();
+      throw;
+    }
+    for (const auto &item : markers) {
+      if (check && check()) {
+        return;
+      }
+      const auto &marker = item.path;
       bool pending = marker.extension() == L".pending";
       if ((!pending && marker.extension() != L".received") || !valid_id(utf8(marker.stem().native()))) {
         continue;
       }
-      plain_path(marker);
-      if (!item.is_regular_file() || item.file_size() > 64 || now - item.last_write_time() < std::chrono::hours(pending ? 24 : 24 * 7)) {
+      const uint64_t written = (uint64_t(item.identity.ftLastWriteTime.dwHighDateTime) << 32) | item.identity.ftLastWriteTime.dwLowDateTime;
+      const uint64_t retention = uint64_t(pending ? 24 : 24 * 7) * 60 * 60 * 10000000;
+      if (file_size(item.identity) > 64 || written > now_ticks || now_ticks - written < retention) {
         continue;
       }
       // Live receivers deny DELETE on their pending marker for their lifetime.
-      handle_t lease(CreateFileW(native_path(marker).c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+      handle_t lease(CreateFileW(native_path(marker).c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
       if (lease.value == INVALID_HANDLE_VALUE) {
+        continue;
+      }
+      const auto actual = object_info(lease.value);
+      if (!same_object(item.identity, actual) || !same_file(item.identity, actual)) {
         continue;
       }
       char label[65];
@@ -995,14 +1314,21 @@ namespace clipboard_files {
         continue;
       }
       auto stage = storage / marker.stem();
-      if (!std::filesystem::is_directory(native_path(stage))) {
-        continue;
-      }
-      plain_path(stage);
       bool protected_stage = false;
       auto stage_name = stage.lexically_normal().make_preferred().native();
       for (const auto &root : protected_roots) {
-        auto root_name = root.lexically_normal().make_preferred().native();
+        auto logical = root;
+        try {
+          constexpr std::wstring_view prefix = L"\\\\?\\";
+          if (logical.native().rfind(prefix, 0) == 0) {
+            logical = std::filesystem::path(logical.native().substr(prefix.size()));
+          }
+          local_path(logical);
+        } catch (...) {
+          protected_stage = true;  // Unknown native selections are retained conservatively.
+          break;
+        }
+        auto root_name = logical.lexically_normal().make_preferred().native();
         if (root_name.size() >= stage_name.size() && CompareStringOrdinal(root_name.data(), static_cast<int>(stage_name.size()), stage_name.data(), static_cast<int>(stage_name.size()), TRUE) == CSTR_EQUAL && (root_name.size() == stage_name.size() || root_name[stage_name.size()] == L'\\')) {
           protected_stage = true;
         }
@@ -1010,30 +1336,19 @@ namespace clipboard_files {
       if (protected_stage) {
         continue;
       }
-      bool unsafe = false;
-      std::vector<std::filesystem::path> entries;
-      for (auto entry = std::filesystem::recursive_directory_iterator(native_path(stage)); entry != std::filesystem::recursive_directory_iterator(); ++entry) {
+      try {
+        remove_owned_tree(stage, check);
         if (check && check()) {
           return;
         }
-        auto attributes = GetFileAttributesW(entry->path().c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
-          unsafe = true;
-          break;
-        }
-        entries.push_back(entry->path());
-      }
-      if (unsafe) {
-        continue;
-      }
-      for (auto entry = entries.rbegin(); entry != entries.rend(); ++entry) {
+        FILE_DISPOSITION_INFO disposition {TRUE};
+        require(SetFileInformationByHandle(lease.value, FileDispositionInfo, &disposition, sizeof(disposition)), "Cannot remove owned clipboard marker");
+      } catch (...) {
+        // Changed paths, reparses and inaccessible entries are retained for a later safe cleanup.
         if (check && check()) {
           return;
         }
-        std::filesystem::remove(*entry);
       }
-      std::filesystem::remove(native_path(stage));
-      std::filesystem::remove(native_path(marker));
     }
   }
   #endif

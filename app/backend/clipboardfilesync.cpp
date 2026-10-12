@@ -217,7 +217,12 @@ public:
     }
     void run() {
         background_t priority;
-        try { prune_storage(storage, read_clipboard_files().paths, [&] { return bool(state.stopping); }); } catch (...) {} // Busy clipboard or unowned stages are left intact.
+        try {
+            const auto snapshot = read_clipboard_files();
+            prune_storage(storage, snapshot.paths, [&] {
+                return state.stopping || GetClipboardSequenceNumber() != snapshot.sequence;
+            });
+        } catch (...) {} // Busy clipboard or unowned stages are left intact.
         QNetworkAccessManager network;
         network.setProxy(QNetworkProxy::NoProxy);
         auto stop = [&] { return bool(state.stopping); };

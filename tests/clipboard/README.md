@@ -42,6 +42,9 @@ samples. Shared incoming publication tests also serialize concurrent text
 observations, reject pending/stale generations and preserve publication identity.
 An incoming file publication winning immediately after a stable text sample
 also cancels the rejected snapshot without uploading stale text or echoing files.
+The Windows writer prepares Unicode, ANSI, OEM and locale formats before
+opening the clipboard. This prevents Windows from registering missing
+conversions during close and advancing the captured publication generation.
 
 `run_file_service_tests.ps1 -ServiceSourceRoot <Sunshine checkout>\src` compiles
 the actual Sunshine file service with MSVC and Moonlight's existing OpenSSL

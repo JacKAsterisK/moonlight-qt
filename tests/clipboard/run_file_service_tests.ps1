@@ -10,6 +10,10 @@ foreach ($source in @('clipboard_files.h', 'clipboard_files.cpp', 'clipboard_fil
         throw "Missing actual Sunshine service source: $source"
     }
 }
+$ServiceIncludeRoot = Split-Path -Parent $ServiceSourceRoot
+if (-not [string]::Equals((Join-Path $ServiceIncludeRoot 'src'), $ServiceSourceRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'ServiceSourceRoot must be the src directory of a Sunshine checkout.'
+}
 if (-not $VcVars) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -26,11 +30,11 @@ call "$VcVars" >nul
 if errorlevel 1 exit /b 1
 set "PATH=$repo\libs\windows\lib\x64;%PATH%"
 cd /d "$testRoot"
-cl /nologo /std:c++17 /EHsc /MD /utf-8 /O2 /I"$repo\libs\windows\include\x64" /I"$ServiceSourceRoot" "$PSScriptRoot\test_clipboardfiles_lifecycle.cpp" "$ServiceSourceRoot\clipboard_files.cpp" /Fe:test_clipboardfiles_lifecycle.exe /link /LIBPATH:"$repo\libs\windows\lib\x64" libcrypto.lib user32.lib shell32.lib Wtsapi32.lib userenv.lib advapi32.lib ole32.lib
+cl /nologo /std:c++17 /EHsc /MD /utf-8 /O2 /I"$repo\libs\windows\include\x64" /I"$ServiceIncludeRoot" "$PSScriptRoot\test_clipboardfiles_lifecycle.cpp" "$ServiceSourceRoot\clipboard_files.cpp" /Fe:test_clipboardfiles_lifecycle.exe /link /LIBPATH:"$repo\libs\windows\lib\x64" libcrypto.lib user32.lib shell32.lib Wtsapi32.lib userenv.lib advapi32.lib ole32.lib
 if errorlevel 1 exit /b 1
 test_clipboardfiles_lifecycle.exe
 if errorlevel 1 exit /b 1
-cl /nologo /std:c++17 /EHsc /MD /utf-8 /O2 /I"$repo\libs\windows\include\x64" /I"$ServiceSourceRoot" "$PSScriptRoot\test_clipboardfiles_context.cpp" /Fe:test_clipboardfiles_context.exe /link /LIBPATH:"$repo\libs\windows\lib\x64" libcrypto.lib user32.lib shell32.lib Wtsapi32.lib userenv.lib advapi32.lib ole32.lib
+cl /nologo /std:c++17 /EHsc /MD /utf-8 /O2 /I"$repo\libs\windows\include\x64" /I"$ServiceIncludeRoot" "$PSScriptRoot\test_clipboardfiles_context.cpp" /Fe:test_clipboardfiles_context.exe /link /LIBPATH:"$repo\libs\windows\lib\x64" libcrypto.lib user32.lib shell32.lib Wtsapi32.lib userenv.lib advapi32.lib ole32.lib
 if errorlevel 1 exit /b 1
 test_clipboardfiles_context.exe
 exit /b %ERRORLEVEL%
